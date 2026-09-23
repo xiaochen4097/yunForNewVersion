@@ -227,13 +227,13 @@ def default_post(router, data, headers=None, m_host=None, isBytes=False, gen_sig
     except:
         return req.text
 
-def noTokenLogin():
+def noTokenLogin(conf_path='./config.ini'):
     print("config中token为空，是否尝试使用账号密码登录？(y/n)")
     LoginChoice = input()
     if LoginChoice == 'y':
-        login_result = Login.main()
+        login_result = Login.main(conf_path)
         if login_result is None :
-            print("意外返回None，请再试一次")
+            print("登录没有成功，请按上面的提示检查配置后重试")
             exit()
 
         token, DeviceId, DeviceName, uuid, sys_edition = login_result
@@ -243,23 +243,58 @@ def noTokenLogin():
         TokenWrite = input()
         if TokenWrite == 'y':
             config = configparser.ConfigParser()
-            config.read('config.ini', encoding='utf-8')
+            config.read(conf_path, encoding='utf-8')
             config.set('User', 'token', token)
             config.set('User', 'uuid', uuid)
             config.set('User', 'device_id', DeviceId)
             config.set('User', 'device_name', DeviceName)
             config.set('User', 'sys_edition', sys_edition)
-            with open('config.ini', 'w+', encoding='utf-8') as f:
+            with open(conf_path, 'w+', encoding='utf-8') as f:
                 config.write(f)
         return token,DeviceId,DeviceName,uuid,sys_edition
     elif LoginChoice == 'n':
         print("由于缺少token退出")
         exit()
 
+def load_home_cralist():
+    """取首页跑步任务列表（cralist），并把服务端的各种异常形态翻译成人话。
+
+    服务端在"当前账号没有跑步任务"时不会返回 cralist，只给很少的字段
+    （实测合工大 3.6.6：{"msg":"操作成功","code":200,"data":{"isAvoid":"N"}}）。
+    直接 ['data']['cralist'][0] 只会抛 KeyError: 'cralist'，看不出原因。
+    """
+    home = default_post("/run/getHomeRunInfo", "")
+    try:
+        obj = json.loads(home)
+    except Exception:
+        raise RuntimeError(
+            "首页接口 /run/getHomeRunInfo 返回的内容不是 JSON（前200字符：" + repr(home[:200])
+            + "），请检查 config.ini 的 token、school_host、app_edition 是否和学校一致。")
+    if not isinstance(obj, dict):
+        raise RuntimeError("首页接口返回格式异常：" + str(obj)[:200])
+    if str(obj.get('code')) != '200':
+        msg = str(obj.get('msg') or obj)
+        if str(obj.get('code')) == '401':
+            raise RuntimeError("token 已失效（" + msg + "）：清空 config.ini 里的 token 后重新用账号密码登录。")
+        raise RuntimeError("首页接口返回错误：" + msg)
+    data = obj.get('data')
+    cralist = data.get('cralist') if isinstance(data, dict) else None
+    if not cralist:
+        print("服务端这次的返回是：" + json.dumps(obj, ensure_ascii=False)[:300])
+        print("服务端没有返回跑步任务（没有 cralist 字段），脚本无法凭空造一个任务出来。常见原因：")
+        print("  1. 本学期学校没有给你开跑步任务。合工大《课外健身跑管理规定》写明该活动只面向")
+        print("     大一、大二本科生及体育课重修生，大三及以上默认没有任务；")
+        print("  2. 本学期的“健身跑认证刷新”还没做，需要先在官方 App 里登录并按提示完成认证；")
+        print("  3. 学校本学期的跑步活动还没开始。有效周期为开学第一周至体育课结课周周日22:00。")
+        print("请先用官方 App 打开首页看有没有任务卡片：有卡片说明是配置/协议问题，请把上面的返回发出来；")
+        print("没有卡片就是学校没给你开任务，脚本这边做什么都没用。")
+        raise RuntimeError("服务端没有返回跑步任务（cralist 为空）")
+    return cralist
+
 class Yun_For_New:
 
     def __init__(self, auto_generate_task = False):
-        data = json.loads(default_post("/run/getHomeRunInfo", ""))['data']['cralist'][0]
+        data = load_home_cralist()[0]
         self.raType = data['raType']
         self.raId = data['id']
         self.strides = strides
@@ -610,7 +645,7 @@ def main(run = True):
     global my_token, my_device_id, my_device_name, my_uuid, my_sys_edition
     if not args.auto_run:
         if len(my_token) == 0:
-            my_token, my_device_id, my_device_name, my_uuid, my_sys_edition = noTokenLogin()
+            my_token, my_device_id, my_device_name, my_uuid, my_sys_edition = noTokenLogin(cfg_path)
         
         print("确定数据无误：")
     print("Token: ".ljust(15) + my_token)
